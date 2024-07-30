@@ -25,7 +25,7 @@ def Delta_load(delta_table_name,current_df,primary_key):
 
   merge_key_df = current_df.selectExpr(f"{primary_key} as mergeKey", *current_df.columns)
 
-  stagedUpdates = updated_rows.union(merge_key_df)
+  stagedUpdates = updated_rows.unionByName(merge_key_df, allowMissingColumns=True)
 
   delta_table.alias("history_table") \
       .merge(stagedUpdates.alias("staged_updates"), f"history_table.{primary_key} = mergeKey") \
