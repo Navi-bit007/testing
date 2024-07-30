@@ -1,0 +1,39 @@
+def Delta_load(delta_table_name,current_df,primary_key):
+  col_list = list(current_df.columns)
+  WMU_col_list = list(current_df.columns)
+  WMU_col_list.remove(primary_key)
+
+  update_condition = " OR ".join([f"updates.{col} <> history_table.{col}" for col in WMU_col_list])
+ 
+  whenMatchedUpdate_condition = " OR ".join([f"staged_updates.{col} <> history_table.{col}" for col in WMU_col_list])
+
+  whenNotMatchedInsert_values = ", ".join([f"{col}: staged_updates.{col}" for col in col_list])
+
+  key_value_dict = dict(pair.split(":") for pair in whenNotMatchedInsert_values.split(", "))
+  whenNotMatchedInsert_values_final = key_value_dict.copy()
+  whenNotMatchedInsert_values_final.update({"availablity": "True", "Effective_date": "staged_updates.Effective_date", "Expired_date": "null"})
+  whenNotMatchedInsert_values = whenNotMatchedInsert_values_final
+
+  delta_table = DeltaTable.forName(spark, f"change_data_capture.{delta_table_name}")
+
+  current_df = current_df.withColumn("Effective_date", current_date())
+
+  updated_rows = current_df.alias("updates") \
+  .join(delta_table.toDF().alias("history_table"), primary_key) \
+  .where(f"history_table.availablity = True AND ({update_condition})") \
+  .selectExpr("NULL as mergeKey", "updates.*")
+
+  merge_key_df = current_df.selectExpr(f"{primary_key} as mergeKey", *current_df.columns)
+
+  stagedUpdates = updated_rows.union(merge_key_df)
+
+  delta_table.alias("history_table") \
+      .merge(stagedUpdates.alias("staged_updates"), f"history_table.{primary_key} = mergeKey") \
+                  .whenMatchedUpdate(
+                      condition=f"history_table.availablity = True AND ({whenMatchedUpdate_condition})", \
+                              set={"availablity": lit(False), "Expired_date": col("staged_updates.Effective_date")}) \
+                  .whenNotMatchedInsert(values=whenNotMatchedInsert_values) \
+                  .whenNotMatchedBySourceUpdate(set={"availablity": lit(False),"Expired_date":current_date(), "DeleteFlag": lit(True)}) \
+  .execute()
+
+  return "Upserted the updated and new records in the history table"
